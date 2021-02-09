@@ -66,7 +66,6 @@ func generateFileContent(gen *protogen.Plugin, file *protogen.File, g *protogen.
 }
 
 func genService(gen *protogen.Plugin, file *protogen.File, g *protogen.GeneratedFile, service *protogen.Service) {
-
 	clientName := service.GoName + "SimpleClient"
 
 	g.P("// ", clientName, " is the client API for ", service.GoName, " service.")
@@ -212,7 +211,6 @@ func genClientMethod(gen *protogen.Plugin, file *protogen.File, g *protogen.Gene
 		g.P("stream ,err := c.cc.NewStream(ctx, &", serviceDescVar, ".Streams[", index, `], "`, sname, `")`)
 		g.P("if err != nil { return nil, err }")
 		g.P("if err := stream.SendMsg(in); err != nil { return nil, err }")
-		g.P("if err := stream.CloseSend(); err != nil { return nil, err }")
 		g.P("var out ", method.Output.GoIdent)
 		g.P("if err := stream.RecvMsg(&out); err != nil { return nil, err }")
 		g.P("return &out, nil")
@@ -220,21 +218,27 @@ func genClientMethod(gen *protogen.Plugin, file *protogen.File, g *protogen.Gene
 		g.P()
 		return
 	}
+
 	streamType := unexport(service.GoName) + method.GoName + "SimpleClient"
-	g.P("stream, err := c.cc.NewStream(ctx, &", serviceDescVar, ".Streams[", index, `], "`, sname, `")`)
-	g.P("if err != nil { return nil, err }")
-	g.P("x := &", streamType, "{ClientStream: stream}")
-	if !method.Desc.IsStreamingClient() {
-		g.P("if err := x.ClientStream.SendMsg(in); err != nil { return nil, err }")
-		g.P("if err := x.ClientStream.CloseSend(); err != nil { return nil, err }")
+
+	if method.Desc.IsStreamingClient() {
+		g.P("return nil, ", statusPackage.Ident("New"), "(", codesPackage.Ident("Unimplemented"), `, "clients streams not currently supported")`)
+		g.P("}")
+		g.P()
+	} else {
+		g.P("stream, err := c.cc.NewStream(ctx, &", serviceDescVar, ".Streams[", index, `], "`, sname, `")`)
+		g.P("if err != nil { return nil, err }")
+		g.P("x := &", streamType, "{ClientStream: stream}")
+		if !method.Desc.IsStreamingClient() {
+			g.P("if err := x.ClientStream.SendMsg(in); err != nil { return nil, err }")
+		}
+		g.P("return x, nil")
+		g.P("}")
+		g.P()
 	}
-	g.P("return x, nil")
-	g.P("}")
-	g.P()
 
 	genSend := method.Desc.IsStreamingClient()
 	genRecv := method.Desc.IsStreamingServer()
-	genCloseAndRecv := !method.Desc.IsStreamingServer()
 
 	// Stream auxiliary types and methods.
 	g.P("type ", service.GoName, "_", method.GoName, "SimpleClient interface {")
@@ -243,9 +247,6 @@ func genClientMethod(gen *protogen.Plugin, file *protogen.File, g *protogen.Gene
 	}
 	if genRecv {
 		g.P("Recv() (*", method.Output.GoIdent, ", error)")
-	}
-	if genCloseAndRecv {
-		g.P("CloseAndRecv() (*", method.Output.GoIdent, ", error)")
 	}
 	g.P(grpcPackage.Ident("ClientStream"))
 	g.P("}")
@@ -264,16 +265,6 @@ func genClientMethod(gen *protogen.Plugin, file *protogen.File, g *protogen.Gene
 	}
 	if genRecv {
 		g.P("func (x *", streamType, ") Recv() (*", method.Output.GoIdent, ", error) {")
-		g.P("var m ", method.Output.GoIdent)
-		g.P("if err := x.ClientStream.RecvMsg(&m); err != nil { return nil, err }")
-		g.P("return &m, nil")
-		g.P("}")
-		g.P()
-	}
-	if genCloseAndRecv {
-		g.P("func (x *", streamType, ") CloseAndRecv() (*", method.Output.GoIdent, ", error) {")
-		g.P("if err := x.ClientStream.CloseSend(); err != nil { return nil, err }")
-		g.P()
 		g.P("var m ", method.Output.GoIdent)
 		g.P("if err := x.ClientStream.RecvMsg(&m); err != nil { return nil, err }")
 		g.P("return &m, nil")
@@ -329,7 +320,7 @@ func genServerMethod(gen *protogen.Plugin, file *protogen.File, g *protogen.Gene
 		g.P("if err := stream.RecvMsg(m); err != nil { return err }")
 		g.P("return srv.(", service.GoName, "SimpleServer).", method.GoName, "(m, &", streamType, "{stream})")
 	} else {
-		g.P("return srv.(", service.GoName, "SimpleServer).", method.GoName, "(&", streamType, "{stream})")
+		g.P("return ", statusPackage.Ident("New"), "(", codesPackage.Ident("Unimplemented"), `, "clients streams not currently supported")`)
 	}
 	g.P("}")
 	g.P()

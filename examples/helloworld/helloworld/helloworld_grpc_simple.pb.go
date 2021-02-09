@@ -34,9 +34,6 @@ func (c *greeterSimpleClient) SayHello(ctx context.Context, in *HelloRequest) (*
 	if err := stream.SendMsg(in); err != nil {
 		return nil, err
 	}
-	if err := stream.CloseSend(); err != nil {
-		return nil, err
-	}
 	var out HelloReply
 	if err := stream.RecvMsg(&out); err != nil {
 		return nil, err

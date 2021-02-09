@@ -5,7 +5,10 @@ package routeguide
 import (
 	context "context"
 	errors "errors"
+
 	simplegrpc "github.com/bakins/simplegrpc"
+	codes "github.com/bakins/simplegrpc/codes"
+	status "github.com/bakins/simplegrpc/status"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -56,9 +59,6 @@ func (c *routeGuideSimpleClient) GetFeature(ctx context.Context, in *Point) (*Fe
 	if err := stream.SendMsg(in); err != nil {
 		return nil, err
 	}
-	if err := stream.CloseSend(); err != nil {
-		return nil, err
-	}
 	var out Feature
 	if err := stream.RecvMsg(&out); err != nil {
 		return nil, err
@@ -73,9 +73,6 @@ func (c *routeGuideSimpleClient) ListFeatures(ctx context.Context, in *Rectangle
 	}
 	x := &routeGuideListFeaturesSimpleClient{ClientStream: stream}
 	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
 		return nil, err
 	}
 	return x, nil
@@ -99,17 +96,11 @@ func (x *routeGuideListFeaturesSimpleClient) Recv() (*Feature, error) {
 }
 
 func (c *routeGuideSimpleClient) RecordRoute(ctx context.Context) (RouteGuide_RecordRouteSimpleClient, error) {
-	stream, err := c.cc.NewStream(ctx, &_RouteGuide_simple_serviceDesc.Streams[2], "/routeguide.RouteGuide/RecordRoute")
-	if err != nil {
-		return nil, err
-	}
-	x := &routeGuideRecordRouteSimpleClient{ClientStream: stream}
-	return x, nil
+	return nil, status.New(codes.Unimplemented, "clients streams not currently supported")
 }
 
 type RouteGuide_RecordRouteSimpleClient interface {
 	Send(*Point) error
-	CloseAndRecv() (*RouteSummary, error)
 	simplegrpc.ClientStream
 }
 
@@ -121,25 +112,8 @@ func (x *routeGuideRecordRouteSimpleClient) Send(m *Point) error {
 	return x.ClientStream.SendMsg(m)
 }
 
-func (x *routeGuideRecordRouteSimpleClient) CloseAndRecv() (*RouteSummary, error) {
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
-
-	var m RouteSummary
-	if err := x.ClientStream.RecvMsg(&m); err != nil {
-		return nil, err
-	}
-	return &m, nil
-}
-
 func (c *routeGuideSimpleClient) RouteChat(ctx context.Context) (RouteGuide_RouteChatSimpleClient, error) {
-	stream, err := c.cc.NewStream(ctx, &_RouteGuide_simple_serviceDesc.Streams[3], "/routeguide.RouteGuide/RouteChat")
-	if err != nil {
-		return nil, err
-	}
-	x := &routeGuideRouteChatSimpleClient{ClientStream: stream}
-	return x, nil
+	return nil, status.New(codes.Unimplemented, "clients streams not currently supported")
 }
 
 type RouteGuide_RouteChatSimpleClient interface {
@@ -234,7 +208,7 @@ func (x *routeGuideListFeaturesServer) Send(m *Feature) error {
 }
 
 func _RouteGuide_RecordRoute_Simple_Handler(srv interface{}, stream simplegrpc.ServerStream) error {
-	return srv.(RouteGuideSimpleServer).RecordRoute(&routeGuideRecordRouteServer{stream})
+	return status.New(codes.Unimplemented, "clients streams not currently supported")
 }
 
 type RouteGuide_RecordRouteSimpleServer interface {
@@ -260,7 +234,7 @@ func (x *routeGuideRecordRouteServer) Recv() (*Point, error) {
 }
 
 func _RouteGuide_RouteChat_Simple_Handler(srv interface{}, stream simplegrpc.ServerStream) error {
-	return srv.(RouteGuideSimpleServer).RouteChat(&routeGuideRouteChatServer{stream})
+	return status.New(codes.Unimplemented, "clients streams not currently supported")
 }
 
 type RouteGuide_RouteChatSimpleServer interface {

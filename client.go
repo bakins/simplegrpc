@@ -12,11 +12,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 
 	"golang.org/x/net/http2"
 )
 
+// ClientConn ...
 type ClientConn interface {
 	NewStream(ctx context.Context, desc *StreamDesc, method string) (ClientStream, error)
 }
@@ -30,6 +30,7 @@ type clientConn struct {
 }
 
 // TransportForEndpoint returns an HTTP/2 transport to be used with the endpoint
+// It uses h2c for http endpoints
 func TransportForEndpoint(endpoint string) (*http2.Transport, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
@@ -48,6 +49,7 @@ func TransportForEndpoint(endpoint string) (*http2.Transport, error) {
 	return &http2.Transport{}, nil
 }
 
+// TransportWrapper wraps a RoundTripper
 type TransportWrapper func(http.RoundTripper) http.RoundTripper
 
 type Options struct {
@@ -149,9 +151,9 @@ func NewClientConn(endpoint string, options ...Option) (ClientConn, error) {
 	return c, nil
 }
 
+// ClientStream ...
 type ClientStream interface {
 	Context() context.Context
-	CloseSend() error
 	SendMsg(m interface{}) error
 	RecvMsg(m interface{}) error
 }
@@ -165,6 +167,10 @@ type unaryRequestStream struct {
 }
 
 func (c *clientConn) NewStream(ctx context.Context, desc *StreamDesc, method string) (ClientStream, error) {
+	if desc.ClientStreams {
+		return nil, errors.New("client streams are not currently supported")
+	}
+
 	if c.interceptor == nil {
 		return clientStreamer(ctx, desc, c, method)
 	}
@@ -181,86 +187,16 @@ func clientStreamer(ctx context.Context, desc *StreamDesc, cc ClientConn, method
 	request := c.request.Clone(ctx)
 	request.URL.Path = method
 
-	if !desc.ClientStreams {
-		return &unaryRequestStream{
-			ctx:         ctx,
-			clientConn:  c,
-			request:     request,
-			requestSent: make(chan struct{}),
-		}, nil
-	}
-
-	return newStreamingRequestStream(ctx, c, request), nil
-}
-
-type unaryUnaryStream struct {
-	ctx        context.Context
-	clientConn *clientConn
-	request    *http.Request
-	readReady  chan struct{}
-	reader     io.ReadCloser
-}
-
-func (u *unaryUnaryStream) Context() context.Context {
-	return u.ctx
-}
-
-func (u *unaryUnaryStream) CloseSend() error {
-	return nil
-}
-
-func (u *unaryUnaryStream) SendMsg(message interface{}) error {
-	select {
-	case <-u.readReady:
-		return errors.New("SendMsg called multiple times for non-streaming client")
-	default:
-
-	}
-
-	defer func() {
-		close(u.readReady)
-	}()
-
-	var buff bytes.Buffer
-	if err := sendMsg(&buff, u.clientConn.codec, u.clientConn.compressor, message); err != nil {
-		close(u.readReady)
-		return err
-	}
-
-	u.request.Body = ioutil.NopCloser(&buff)
-
-	client := &http.Client{
-		Transport: u.clientConn.transport,
-	}
-
-	resp, err := client.Do(u.request)
-	if err != nil {
-		close(u.readReady)
-		return err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		_ = resp.Body.Close()
-		close(u.readReady)
-		return fmt.Errorf("unexpected http status: %d", resp.StatusCode)
-	}
-
-	// TODO: check content type, compression
-	// create a helper function
-
-	u.reader = resp.Body
-
-	close(u.readReady)
-
-	return nil
+	return &unaryRequestStream{
+		ctx:         ctx,
+		clientConn:  c,
+		request:     request,
+		requestSent: make(chan struct{}),
+	}, nil
 }
 
 func (u *unaryRequestStream) Context() context.Context {
 	return u.ctx
-}
-
-func (u *unaryRequestStream) CloseSend() error {
-	return nil
 }
 
 func (u *unaryRequestStream) SendMsg(message interface{}) error {
@@ -268,6 +204,8 @@ func (u *unaryRequestStream) SendMsg(message interface{}) error {
 		return errors.New("SendMsg called multiple times for non-streaming client")
 	}
 
+	defer close(u.requestSent)
+
 	var buff bytes.Buffer
 	if err := sendMsg(&buff, u.clientConn.codec, u.clientConn.compressor, message); err != nil {
 		return err
@@ -281,20 +219,17 @@ func (u *unaryRequestStream) SendMsg(message interface{}) error {
 
 	resp, err := client.Do(u.request)
 	if err != nil {
-		close(u.requestSent)
 		return err
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, u.response.Body)
 		_ = u.response.Body.Close()
-		close(u.requestSent)
 		return fmt.Errorf("unexpected http status: %d", resp.StatusCode)
 	}
 
 	// TODO: check content type, compression
 	u.response = resp
-
-	close(u.requestSent)
 
 	return nil
 }
@@ -312,120 +247,6 @@ func (u *unaryRequestStream) RecvMsg(message interface{}) error {
 
 	if err := recvMsg(u.response.Body, u.clientConn.codec, u.clientConn.compressor, message); err != nil {
 		_ = u.response.Body.Close()
-		return err
-	}
-
-	return nil
-}
-
-type streamingRequestStream struct {
-	ctx            context.Context
-	clientConn     *clientConn
-	request        *http.Request
-	writeReady     chan struct{}
-	writer         io.WriteCloser
-	readReady      chan struct{}
-	reader         io.ReadCloser
-	wroteCloseOnce sync.Once
-	err            error // only written by newStreamingRequestStream
-	errReady       chan struct{}
-}
-
-func newStreamingRequestStream(ctx context.Context, clientConn *clientConn, request *http.Request) *streamingRequestStream {
-	reader, writer := io.Pipe()
-	request.Body = reader
-
-	s := &streamingRequestStream{
-		ctx:        ctx,
-		clientConn: clientConn,
-		request:    request,
-		writeReady: make(chan struct{}),
-		readReady:  make(chan struct{}),
-		errReady:   make(chan struct{}),
-		writer:     writer,
-	}
-
-	go func() {
-		client := &http.Client{
-			Transport: s,
-		}
-
-		if _, err := client.Do(s.request); err != nil {
-			s.err = err
-			close(s.errReady)
-			_ = s.CloseSend()
-		}
-	}()
-
-	return s
-}
-
-func (s *streamingRequestStream) RoundTrip(req *http.Request) (*http.Response, error) {
-	close(s.writeReady)
-
-	resp, err := s.clientConn.transport.RoundTrip(req)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("unexpected http status: %d", resp.StatusCode)
-	}
-
-	if resp.Header.Get("Content-Type") != baseContentType+"+"+s.clientConn.codec.Name() {
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("unexpected content type %q", resp.Header.Get("Content-Type"))
-	}
-
-	// todo, check grpc-encoding
-
-	s.reader = resp.Body
-	close(s.readReady)
-
-	return resp, err
-}
-
-func (s *streamingRequestStream) Context() context.Context {
-	return s.ctx
-}
-
-func (s *streamingRequestStream) SendMsg(message interface{}) error {
-	select {
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	case <-s.errReady:
-		return fmt.Errorf("failed to send message because of prior error: %w", s.err)
-	case <-s.writeReady:
-	}
-
-	if err := sendMsg(s.writer, s.clientConn.codec, s.clientConn.compressor, message); err != nil {
-		_ = s.CloseSend()
-		//_ = s.reader.Close()
-		return err
-	}
-
-	return nil
-}
-
-func (s *streamingRequestStream) CloseSend() error {
-	s.wroteCloseOnce.Do(func() {
-		_ = s.writer.Close()
-	})
-	return nil
-}
-
-func (s *streamingRequestStream) RecvMsg(message interface{}) error {
-	select {
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	case <-s.errReady:
-		return fmt.Errorf("failed to receive message because of prior error: %w", s.err)
-	case <-s.readReady:
-	}
-
-	if err := recvMsg(s.reader, s.clientConn.codec, s.clientConn.compressor, message); err != nil {
-		_ = s.reader.Close()
 		return err
 	}
 

@@ -87,6 +87,11 @@ func (s *Status) Message() string {
 	return s.message
 }
 
+// GRPCStatus ...
+func (s *Status) GRPCStatus() *Status {
+	return s
+}
+
 // FromError returns a Status representing err if it was produced from this
 // package or has a method `GRPCStatus() *Status`. Otherwise, ok is false and a
 // Status is returned with codes.Unknown and the original error message.

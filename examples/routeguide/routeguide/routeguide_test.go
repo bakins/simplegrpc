@@ -12,6 +12,8 @@ import (
 	"golang.org/x/net/http2/h2c"
 
 	"github.com/bakins/simplegrpc"
+	"github.com/bakins/simplegrpc/codes"
+	"github.com/bakins/simplegrpc/status"
 )
 
 func setup(t *testing.T) RouteGuideSimpleClient {
@@ -88,68 +90,26 @@ func TestRecordRoute(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 
-	stream, err := client.RecordRoute(ctx)
-	require.NoError(t, err)
+	_, err := client.RecordRoute(ctx)
+	require.Error(t, err)
 
-	for i := 0; i < 10; i++ {
-		p := Point{
-			Longitude: 1,
-			Latitude:  100,
-		}
-
-		err := stream.Send(&p)
-		require.NoError(t, err)
-	}
-
-	resp, err := stream.CloseAndRecv()
-	require.NoError(t, err)
-
-	require.Equal(t, int32(10), resp.PointCount)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	require.Equal(t, codes.Unimplemented, st.Code())
 }
 
 func TestRouteChat(t *testing.T) {
 	client := setup(t)
 
-	done := make(chan struct{})
-
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 
-	stream, err := client.RouteChat(ctx)
-	require.NoError(t, err)
+	_, err := client.RouteChat(ctx)
+	require.Error(t, err)
 
-	go func() {
-		for i := 0; i < 10; i++ {
-			note := RouteNote{
-				Location: &Point{
-					Latitude: int32(i),
-				},
-			}
-
-			err := stream.Send(&note)
-			require.NoError(t, err)
-		}
-
-		err = stream.CloseSend()
-		require.NoError(t, err)
-
-		close(done)
-	}()
-
-	count := 0
-	for i := 0; i < 11; i++ {
-		note, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		require.NoError(t, err)
-		require.Equal(t, int32(100*i), note.Location.Latitude)
-		count++
-	}
-
-	<-done
-
-	require.Equal(t, 10, count)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	require.Equal(t, codes.Unimplemented, st.Code())
 }
 
 type server struct{}
