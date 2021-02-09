@@ -302,6 +302,7 @@ func recvMsg(reader io.Reader, codec Codec, compressor Compressor, message inter
 	prefix := []byte{0, 0, 0, 0, 0}
 
 	if _, err := reader.Read(prefix); err != nil {
+		fmt.Println("read failed", err)
 		// EOF here means end of stream
 		return err
 	}

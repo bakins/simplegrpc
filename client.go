@@ -11,8 +11,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
+	"github.com/bakins/simplegrpc/codes"
+	"github.com/bakins/simplegrpc/status"
 	"golang.org/x/net/http2"
 )
 
@@ -145,6 +148,9 @@ func NewClientConn(endpoint string, options ...Option) (ClientConn, error) {
 	}
 
 	c.compressor = opts.compressor
+	if c.compressor != nil {
+		c.request.Header.Set("Grpc-Encoding", c.compressor.Name())
+	}
 
 	c.request.Header.Set("Content-Type", baseContentType+"+"+c.codec.Name())
 
@@ -158,7 +164,8 @@ type ClientStream interface {
 	RecvMsg(m interface{}) error
 }
 
-type unaryRequestStream struct {
+// unary request streaming response
+type unaryStreamRequest struct {
 	ctx         context.Context
 	clientConn  *clientConn
 	request     *http.Request
@@ -166,11 +173,17 @@ type unaryRequestStream struct {
 	requestSent chan struct{}
 }
 
+// unary request unary response
+type unaryUnaryRequest struct {
+	unaryStreamRequest
+}
+
 func (c *clientConn) NewStream(ctx context.Context, desc *StreamDesc, method string) (ClientStream, error) {
 	if desc.ClientStreams {
 		return nil, errors.New("client streams are not currently supported")
 	}
 
+	// TODO: ensure resp body is closed always
 	if c.interceptor == nil {
 		return clientStreamer(ctx, desc, c, method)
 	}
@@ -187,19 +200,42 @@ func clientStreamer(ctx context.Context, desc *StreamDesc, cc ClientConn, method
 	request := c.request.Clone(ctx)
 	request.URL.Path = method
 
-	return &unaryRequestStream{
-		ctx:         ctx,
-		clientConn:  c,
-		request:     request,
-		requestSent: make(chan struct{}),
+	if desc.ServerStreams {
+		return &unaryStreamRequest{
+			ctx:         ctx,
+			clientConn:  c,
+			request:     request,
+			requestSent: make(chan struct{}),
+		}, nil
+	}
+
+	return &unaryUnaryRequest{
+		unaryStreamRequest: unaryStreamRequest{
+			ctx:         ctx,
+			clientConn:  c,
+			request:     request,
+			requestSent: make(chan struct{}),
+		},
 	}, nil
 }
 
-func (u *unaryRequestStream) Context() context.Context {
+// close body after receiving single message
+func (u *unaryUnaryRequest) RecvMsg(message interface{}) error {
+	err := u.unaryStreamRequest.RecvMsg(message)
+	u.closeRecv()
+	return err
+}
+
+func (u *unaryStreamRequest) Context() context.Context {
 	return u.ctx
 }
 
-func (u *unaryRequestStream) SendMsg(message interface{}) error {
+func (u *unaryStreamRequest) closeRecv() {
+	_, _ = io.Copy(io.Discard, u.response.Body)
+	_ = u.response.Body.Close()
+}
+
+func (u *unaryStreamRequest) SendMsg(message interface{}) error {
 	if u.response != nil {
 		return errors.New("SendMsg called multiple times for non-streaming client")
 	}
@@ -223,8 +259,7 @@ func (u *unaryRequestStream) SendMsg(message interface{}) error {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, u.response.Body)
-		_ = u.response.Body.Close()
+		u.closeRecv()
 		return fmt.Errorf("unexpected http status: %d", resp.StatusCode)
 	}
 
@@ -234,7 +269,7 @@ func (u *unaryRequestStream) SendMsg(message interface{}) error {
 	return nil
 }
 
-func (u *unaryRequestStream) RecvMsg(message interface{}) error {
+func (u *unaryStreamRequest) RecvMsg(message interface{}) error {
 	select {
 	case <-u.ctx.Done():
 		return u.ctx.Err()
@@ -246,9 +281,55 @@ func (u *unaryRequestStream) RecvMsg(message interface{}) error {
 	}
 
 	if err := recvMsg(u.response.Body, u.clientConn.codec, u.clientConn.compressor, message); err != nil {
-		_ = u.response.Body.Close()
+		u.closeRecv()
+
+		if code := getGrpcStatus(u.response); code != codes.OK {
+			msg := getGrpcMessage(u.response)
+			if msg == "" {
+				msg = code.String()
+			}
+			return status.Error(code, msg)
+		}
+
 		return err
 	}
 
 	return nil
+}
+
+var (
+	grpcStatus  = http.CanonicalHeaderKey("Grpc-Status")
+	grpcMessage = http.CanonicalHeaderKey("Grpc-Message")
+)
+
+func getGrpcStatus(resp *http.Response) codes.Code {
+	v := resp.Header.Get(grpcStatus)
+	if v == "0" {
+		return codes.OK
+	}
+
+	if v == "" {
+		v = resp.Trailer.Get(grpcStatus)
+	}
+
+	if v == "0" || v == "" {
+		return codes.OK
+	}
+
+	c, err := strconv.Atoi(v)
+	if err != nil {
+		// should return error?
+		return codes.OK
+	}
+
+	return codes.Code(c)
+}
+
+func getGrpcMessage(resp *http.Response) string {
+	v := resp.Header.Get(grpcMessage)
+	if v != "" {
+		return v
+	}
+
+	return resp.Trailer.Get(grpcMessage)
 }

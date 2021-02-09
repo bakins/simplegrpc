@@ -10,6 +10,8 @@ protoc \
     --go-simple-grpc_out=./examples/helloworld/helloworld \
     --go-simple-grpc_opt=paths=source_relative \
     --plugin=protoc-gen-go-simple-grpc=./script/gen.sh \
+    --go-grpc_out=./examples/helloworld/helloworld \
+    --go-grpc_opt=paths=source_relative \
     ./examples/helloworld/helloworld/helloworld.proto
 
 protoc \

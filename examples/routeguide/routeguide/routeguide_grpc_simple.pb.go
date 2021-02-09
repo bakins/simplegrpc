@@ -5,7 +5,6 @@ package routeguide
 import (
 	context "context"
 	errors "errors"
-
 	simplegrpc "github.com/bakins/simplegrpc"
 	codes "github.com/bakins/simplegrpc/codes"
 	status "github.com/bakins/simplegrpc/status"
