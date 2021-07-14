@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"path"
 	"strconv"
@@ -323,4 +324,76 @@ func (s *GreeterGRPCServer) callSayHello(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("grpc-status", "0")
 	w.Header().Set("grpc-message", "OK")
+}
+
+type GreeterGRPCClient struct {
+	interceptor simplegrpc.Interceptor
+	client      *http.Client
+	request     *http.Request
+}
+
+func NewGreeterGRPCClient(endpoint string, transport http.RoundTripper) (*GreeterGRPCClient, error) {
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+
+	client := http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: transport,
+	}
+
+	request, err := http.NewRequest(http.MethodPost, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	c := GreeterGRPCClient{
+		client:  &client,
+		request: request,
+	}
+
+	return &c, nil
+}
+
+func (s *GreeterGRPCClient) SayHello(ctx context.Context, input *HelloRequest) (*HelloReply, error) {
+	request := s.request.Clone(ctx)
+	request.ContentLength = -1
+
+	body, err := proto.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+
+	// does not support compression currently
+	prefix := []byte{0, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(prefix[1:], uint32(len(body)))
+
+	buff := bytes.NewBuffer(nil)
+	buff.Grow(len(prefix) + len(body))
+
+	if _, err := buff.Write(prefix); err != nil {
+		return nil, err
+	}
+
+	if _, err := buff.Write(body); err != nil {
+		return nil, err
+	}
+
+	request.Body = ioutil.NopCloser(buff)
+
+	resp, err := s.client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// TODO: read some of the body for the error
+		return nil, fmt.Errorf("unexpected HTTP status code %d", resp.StatusCode)
+	}
+
+	return nil, nil
 }

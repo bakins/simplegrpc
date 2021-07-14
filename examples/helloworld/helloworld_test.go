@@ -2,7 +2,6 @@ package helloworld
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -42,6 +41,6 @@ type server struct{}
 // SayHello implements helloworld.GreeterServer
 func (s *server) SayHello(ctx context.Context, in *HelloRequest) (*HelloReply, error) {
 	// fmt.Println("I am in SayHello")
-	// return &HelloReply{Message: "Hello " + in.GetName()}, nil
-	return nil, errors.New("bad stuff")
+	return &HelloReply{Message: "Hello " + in.GetName()}, nil
+	// return nil, errors.New("bad stuff")
 }

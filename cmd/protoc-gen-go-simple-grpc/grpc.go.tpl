@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"path"
 	"strconv"
@@ -337,12 +338,11 @@ func (s *{{ $service.GoName }}GRPCServer)call{{ $method.GoName }}(w http.Respons
 
 type {{ .GoName }}GRPCClient struct {
 	interceptor simplegrpc.Interceptor
-	//codecs map[string]simplegrpc.Codec
 	client *http.Client
-	request *http.Request
+	request *http.Request 
 }
 
-func New{{ .GoName }}GRPCClient(endpoint string, transport http.RoundTripper) (*{{ .GoName }}GRPCClient, error) {
+func New{{ $service.GoName }}GRPCClient(endpoint string, transport http.RoundTripper) (*{{ $service.GoName }}GRPCClient, error) {
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
@@ -354,7 +354,64 @@ func New{{ .GoName }}GRPCClient(endpoint string, transport http.RoundTripper) (*
 		Transport: transport,
 	}
 
+	request, err := http.NewRequest(http.MethodPost, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
 
+	c := {{ $service.GoName }}GRPCClient {
+		client: &client,
+		request: request,
+	}
+
+	return &c, nil
 }
+
+{{range $method := .Methods }}	
+func (s *{{ $service.GoName }}GRPCClient){{ $method.GoName }}(ctx context.Context, input *{{ $method.Input}}) (*{{ $method.Output }}, error){
+	request := s.request.Clone(ctx)
+	request.ContentLength = -1
+
+	body, err := proto.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+
+	// does not support compression currently
+	prefix := []byte{0,0,0,0,0}
+	binary.BigEndian.PutUint32(prefix[1:], uint32(len(body)))
+
+	buff := bytes.NewBuffer(nil)
+	buff.Grow(len(prefix)+len(body))
+
+	if _, err := buff.Write(prefix); err != nil {
+		return nil, err
+	}
+	
+	if _, err := buff.Write(body); err != nil {
+		return nil, err
+	}
+
+	request.Body = ioutil.NopCloser(buff)
+
+	resp, err := s.client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// TODO: read some of the body for the error
+		return nil, fmt.Errorf("unexpected HTTP status code %d", resp.StatusCode)
+	}
+
+	//check header for status
+	// read body
+	// check trailer
+	
+	return nil, nil
+}
+{{ end }}
 
 {{ end }}
