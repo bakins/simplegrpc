@@ -1,67 +1,116 @@
-/*
- * Based on https://github.com/grpc/grpc-go/blob/master/cmd/protoc-gen-go-grpc/main.go
- * Copyright 2020 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-
-// protoc-gen-go-grpc is a plugin for the Google protocol buffer compiler to
-// generate Go code. Install it by building this program and making it
-// accessible within your PATH with the name:
-//	protoc-gen-go-grpc
-//
-// The 'go-grpc' suffix becomes part of the argument for the protocol compiler,
-// such that it can be invoked as:
-//	protoc --go-grpc_out=. path/to/file.proto
-//
-// This generates Go service definitions for the protocol buffer defined by
-// file.proto.  With that input, the output will be written to:
-//	path/to/file_grpc.pb.go
 package main
 
 import (
+	"bytes"
+	"embed"
 	"flag"
 	"fmt"
+	"os"
+	"text/template"
 
 	"google.golang.org/protobuf/compiler/protogen"
-	"google.golang.org/protobuf/types/pluginpb"
 )
 
-const version = "0.1.0"
-
-var requireUnimplemented *bool
+//go:embed *.tpl
+var templates embed.FS
 
 func main() {
-	showVersion := flag.Bool("version", false, "print the version and exit")
-	flag.Parse()
-	if *showVersion {
-		fmt.Printf("protoc-gen-go-grpc-simple %v\n", version)
-		return
-	}
-
 	var flags flag.FlagSet
 
 	protogen.Options{
 		ParamFunc: flags.Set,
 	}.Run(func(gen *protogen.Plugin) error {
-		gen.SupportedFeatures = uint64(pluginpb.CodeGeneratorResponse_FEATURE_PROTO3_OPTIONAL)
 		for _, f := range gen.Files {
-			if !f.Generate {
-				continue
+			if f.Generate {
+				generateFile(gen, f)
 			}
-			generateFile(gen, f)
 		}
 		return nil
 	})
+}
+
+type templatePackage struct {
+	Name     string
+	Package  string
+	Services []templateService
+}
+
+type templateService struct {
+	Name    string
+	GoName  string
+	Methods []templateMethod
+}
+
+type templateMethod struct {
+	Name   string
+	GoName string
+	Input  string
+	Output string
+}
+
+func exitError(err error) {
+	_, _ = fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
+}
+
+func generateFile(gen *protogen.Plugin, file *protogen.File) {
+	if len(file.Services) == 0 {
+		return
+	}
+
+	data, err := templates.ReadFile("grpc.go.tpl")
+	if err != nil {
+		exitError(err)
+	}
+
+	tmpl, err := template.New("grpc.go.tpl").Parse(string(data))
+	if err != nil {
+		exitError(err)
+	}
+
+	_ = tmpl
+	filename := file.GeneratedFilenamePrefix + "_simplegrpc.pb.go"
+	g := gen.NewGeneratedFile(filename, file.GoImportPath)
+
+	_ = g
+
+	tp := templatePackage{
+		Name:    string(file.Desc.FullName()),
+		Package: string(file.GoPackageName),
+	}
+
+	for _, service := range file.Services {
+		if len(service.Methods) == 0 {
+			continue
+		}
+
+		s := templateService{
+			Name:   string(service.Desc.Name()),
+			GoName: service.GoName,
+		}
+
+		for _, method := range service.Methods {
+			m := templateMethod{
+				Name:   string(method.Desc.Name()),
+				GoName: method.GoName,
+				Input:  g.QualifiedGoIdent(method.Input.GoIdent),
+				Output: g.QualifiedGoIdent(method.Output.GoIdent),
+			}
+
+			s.Methods = append(s.Methods, m)
+		}
+
+		tp.Services = append(tp.Services, s)
+	}
+
+	if len(tp.Services) == 0 {
+		return
+	}
+
+	var buff bytes.Buffer
+	if err := tmpl.Execute(&buff, &tp); err != nil {
+		exitError(err)
+	}
+
+	g.P(buff.String())
 }
