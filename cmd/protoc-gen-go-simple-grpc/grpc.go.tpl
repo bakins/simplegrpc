@@ -82,7 +82,6 @@ type {{ .GoName }}GRPCHandler interface {
 type {{ .GoName }}GRPCServer struct {
 	implementation {{ .GoName }}GRPCService
 	interceptor simplegrpc.Interceptor
-	codecs map[string]simplegrpc.Codec
 	handlers map[string]http.Handler
 	pathPrefix string
 }
@@ -142,39 +141,11 @@ func New{{ .GoName }}GRPCServer(implementation {{ .GoName }}GRPCService, opts ..
 
 	interceptors = append(interceptors, serverOpts.Interceptors...) 
 	
-	protoErr := errors.New("message is not a proto.")
-	protobufCodec := simplegrpc.ToCodec(
-		"proto",
-		func (ctx context.Context, v interface{}) ([]byte, error) {
-			m, ok := v.(proto.Message)
-			if !ok {
-				return nil, protoErr
-			}
-			return proto.MarshalOptions{}.Marshal(m)
-		},
-		func (ctx context.Context, data []byte, v interface{}) error {
-			m, ok := v.(proto.Message)
-			if !ok {
-				return protoErr
-			}
-			return proto.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(data, m)
-		},
-	)
-
-	codecs := []simplegrpc.Codec{protobufCodec}
-	codecs = append(codecs, serverOpts.Codecs...)
-
-
 	s:= &{{ .GoName }}GRPCServer{
 		implementation: implementation,
 		interceptor: simplegrpc.ChainInterceptors(interceptors...),
-		codecs: map[string]simplegrpc.Codec{},
 		handlers: map[string]http.Handler{},
 		pathPrefix: path.Clean(path.Join("/", "{{ $package }}.{{ .Name }}")) + "/",
-	}
-
-	for _, c := range codecs {
-		s.codecs[c.Name()] = c
 	}
 
 	{{range $method := .Methods }}
@@ -225,22 +196,15 @@ func(s *{{ .GoName }}GRPCServer)ServeHTTP(w http.ResponseWriter, r *http.Request
 }
 
 {{range $method := .Methods }}	
+
 func (s *{{ $service.GoName }}GRPCServer)call{{ $method.GoName }}(w http.ResponseWriter, r *http.Request) {
-	subContentType := "proto"
-
 	ct := r.Header.Get("Content-Type")
-	if ct != "application/grpc" {
-		if !strings.HasPrefix(ct, "application/grpc") {
-			http.Error(w, "invalid content-type", http.StatusBadRequest)
-		return
-		}
-		subContentType = strings.TrimPrefix(ct, "application/grpc+")
-	}
 
-	codec, ok := s.codecs[subContentType]
-	if !ok {
-		err := simplegrpc.Errorf(simplegrpc.Unimplemented, "unsupported codec %q", subContentType)
-		s.serveError(err, w, ct)
+	switch ct {
+	case "application/grpc", "application/grpc+proto":
+	default:
+		e := simplegrpc.Errorf(simplegrpc.Unimplemented, "unsupported content-type %q", ct)
+		s.serveError(e, w, ct)
 		return
 	}
 
@@ -266,7 +230,8 @@ func (s *{{ $service.GoName }}GRPCServer)call{{ $method.GoName }}(w http.Respons
 	ctx := r.Context()
 	reqContent := &{{ $method.Input }}{}
 
-	if err := codec.Unmarshal(ctx, body, reqContent); err != nil {
+	u := proto.UnmarshalOptions{DiscardUnknown: true}
+	if err := u.Unmarshal(body, reqContent); err != nil {
 		e := simplegrpc.Errorf(simplegrpc.InvalidArgument, "failed to unmarshal request body: %v", err)
 		s.serveError(e, w, ct)
 		return
@@ -306,7 +271,7 @@ func (s *{{ $service.GoName }}GRPCServer)call{{ $method.GoName }}(w http.Respons
 	}
 
 	// TODO: check for message too large
-	respBytes, err := codec.Marshal(ctx, respContent)
+	respBytes, err := proto.Marshal(respContent)
 	if err != nil {
 		e := simplegrpc.Errorf(simplegrpc.Internal, "failed to unmarshal request body: %v", err)
 		s.serveError(e, w, ct)
@@ -409,7 +374,7 @@ func (s *{{ $service.GoName }}GRPCClient){{ $method.GoName }}(ctx context.Contex
 	//check header for status
 	// read body
 	// check trailer
-	
+
 	return nil, nil
 }
 {{ end }}

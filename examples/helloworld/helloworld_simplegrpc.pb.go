@@ -77,7 +77,6 @@ type GreeterGRPCHandler interface {
 type GreeterGRPCServer struct {
 	implementation GreeterGRPCService
 	interceptor    simplegrpc.Interceptor
-	codecs         map[string]simplegrpc.Codec
 	handlers       map[string]http.Handler
 	pathPrefix     string
 }
@@ -137,38 +136,11 @@ func NewGreeterGRPCServer(implementation GreeterGRPCService, opts ...simplegrpc.
 
 	interceptors = append(interceptors, serverOpts.Interceptors...)
 
-	protoErr := errors.New("message is not a proto.")
-	protobufCodec := simplegrpc.ToCodec(
-		"proto",
-		func(ctx context.Context, v interface{}) ([]byte, error) {
-			m, ok := v.(proto.Message)
-			if !ok {
-				return nil, protoErr
-			}
-			return proto.MarshalOptions{}.Marshal(m)
-		},
-		func(ctx context.Context, data []byte, v interface{}) error {
-			m, ok := v.(proto.Message)
-			if !ok {
-				return protoErr
-			}
-			return proto.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(data, m)
-		},
-	)
-
-	codecs := []simplegrpc.Codec{protobufCodec}
-	codecs = append(codecs, serverOpts.Codecs...)
-
 	s := &GreeterGRPCServer{
 		implementation: implementation,
 		interceptor:    simplegrpc.ChainInterceptors(interceptors...),
-		codecs:         map[string]simplegrpc.Codec{},
 		handlers:       map[string]http.Handler{},
 		pathPrefix:     path.Clean(path.Join("/", "helloworld.Greeter")) + "/",
-	}
-
-	for _, c := range codecs {
-		s.codecs[c.Name()] = c
 	}
 
 	s.handlers["SayHello"] = http.HandlerFunc(s.callSayHello)
@@ -217,21 +189,13 @@ func (s *GreeterGRPCServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *GreeterGRPCServer) callSayHello(w http.ResponseWriter, r *http.Request) {
-	subContentType := "proto"
-
 	ct := r.Header.Get("Content-Type")
-	if ct != "application/grpc" {
-		if !strings.HasPrefix(ct, "application/grpc") {
-			http.Error(w, "invalid content-type", http.StatusBadRequest)
-			return
-		}
-		subContentType = strings.TrimPrefix(ct, "application/grpc+")
-	}
 
-	codec, ok := s.codecs[subContentType]
-	if !ok {
-		err := simplegrpc.Errorf(simplegrpc.Unimplemented, "unsupported codec %q", subContentType)
-		s.serveError(err, w, ct)
+	switch ct {
+	case "application/grpc", "application/grpc+proto":
+	default:
+		e := simplegrpc.Errorf(simplegrpc.Unimplemented, "unsupported content-type %q", ct)
+		s.serveError(e, w, ct)
 		return
 	}
 
@@ -257,7 +221,8 @@ func (s *GreeterGRPCServer) callSayHello(w http.ResponseWriter, r *http.Request)
 	ctx := r.Context()
 	reqContent := &HelloRequest{}
 
-	if err := codec.Unmarshal(ctx, body, reqContent); err != nil {
+	u := proto.UnmarshalOptions{DiscardUnknown: true}
+	if err := u.Unmarshal(body, reqContent); err != nil {
 		e := simplegrpc.Errorf(simplegrpc.InvalidArgument, "failed to unmarshal request body: %v", err)
 		s.serveError(e, w, ct)
 		return
@@ -297,7 +262,7 @@ func (s *GreeterGRPCServer) callSayHello(w http.ResponseWriter, r *http.Request)
 	}
 
 	// TODO: check for message too large
-	respBytes, err := codec.Marshal(ctx, respContent)
+	respBytes, err := proto.Marshal(respContent)
 	if err != nil {
 		e := simplegrpc.Errorf(simplegrpc.Internal, "failed to unmarshal request body: %v", err)
 		s.serveError(e, w, ct)
@@ -394,6 +359,10 @@ func (s *GreeterGRPCClient) SayHello(ctx context.Context, input *HelloRequest) (
 		// TODO: read some of the body for the error
 		return nil, fmt.Errorf("unexpected HTTP status code %d", resp.StatusCode)
 	}
+
+	//check header for status
+	// read body
+	// check trailer
 
 	return nil, nil
 }
